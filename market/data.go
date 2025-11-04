@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"math"
 	"net/http"
 	"strconv"
 	"strings"
 )
+
+const maxVPVRTrades = 5000
 
 // Get 获取指定代币的市场数据
 func Get(symbol string) (*Data, error) {
@@ -69,6 +72,18 @@ func Get(symbol string) (*Data, error) {
 	// 计算长期数据
 	longerTermData := calculateLongerTermData(klines4h)
 
+	// 计算VPVR数据（优先使用交易明细）
+	apiClient := NewAPIClient()
+	vpvrTrades, tradeErr := fetchTradesForVPVR(apiClient, symbol, klines4h, 24)
+	if tradeErr != nil {
+		log.Printf("获取VPVR交易数据失败: %v", tradeErr)
+	}
+	vpvrData := calculateVPVR(klines4h, vpvrTrades, 24)
+	if vpvrData == nil {
+		// 使用K线数据作为退路
+		vpvrData = calculateVPVR(klines4h, nil, 24)
+	}
+
 	return &Data{
 		Symbol:            symbol,
 		CurrentPrice:      currentPrice,
@@ -81,6 +96,7 @@ func Get(symbol string) (*Data, error) {
 		FundingRate:       fundingRate,
 		IntradaySeries:    intradayData,
 		LongerTermContext: longerTermData,
+		VPVR:              vpvrData,
 	}, nil
 }
 
@@ -422,6 +438,17 @@ func Format(data *Data) string {
 		}
 	}
 
+	if data.VPVR != nil && len(data.VPVR.PriceLevels) > 0 {
+		sb.WriteString("VPVR (3‑minute visible range):\n\n")
+		sb.WriteString(fmt.Sprintf("Point of Control: %.3f\n", data.VPVR.POC))
+		sb.WriteString(fmt.Sprintf("Value Area Low: %.3f, Value Area High: %.3f\n\n", data.VPVR.VAL, data.VPVR.VAH))
+		sb.WriteString(fmt.Sprintf("Price levels: %s\n\n", formatFloatSlice(data.VPVR.PriceLevels)))
+		sb.WriteString(fmt.Sprintf("Volume profile: %s\n\n", formatFloatSlice(data.VPVR.Volumes)))
+		if len(data.VPVR.Trades) > 0 {
+			sb.WriteString(fmt.Sprintf("Trades analyzed: %d\n\n", len(data.VPVR.Trades)))
+		}
+	}
+
 	return sb.String()
 }
 
@@ -488,4 +515,255 @@ func parseFloat(v interface{}) (float64, error) {
 	default:
 		return 0, fmt.Errorf("unsupported type: %T", v)
 	}
+}
+
+// calculateVPVR 构建可见区间成交量分布（优先使用交易明细，退路为K线成交量）
+func calculateVPVR(klines []Kline, trades []Trade, numBins int) *VPVRData {
+	if len(klines) == 0 || numBins <= 0 {
+		return nil
+	}
+
+	priceMin, priceMax := vpvrPriceRange(klines, numBins)
+	if priceMin == math.MaxFloat64 || priceMax <= priceMin {
+		return nil
+	}
+
+	priceLevels, binWidth := buildVPVRPriceLevels(priceMin, priceMax, numBins)
+	if binWidth == 0 {
+		return nil
+	}
+
+	var volumes []float64
+	if len(trades) > 0 {
+		volumes = accumulateVolumesFromTrades(trades, priceMin, binWidth, numBins)
+	} else {
+		volumes = accumulateVolumesFromKlines(klines, priceMin, binWidth, numBins)
+	}
+
+	result := finalizeVPVR(priceLevels, volumes, priceMin, binWidth)
+	if result != nil && len(trades) > 0 {
+		result.Trades = trades
+	}
+
+	return result
+}
+
+func fetchTradesForVPVR(client *APIClient, symbol string, klines []Kline, numBins int) ([]Trade, error) {
+	if client == nil {
+		return nil, fmt.Errorf("nil api client")
+	}
+	if len(klines) == 0 {
+		return nil, nil
+	}
+
+	startIdx := len(klines) - numBins
+	if startIdx < 0 {
+		startIdx = 0
+	}
+
+	startTime := klines[startIdx].OpenTime
+	endTime := klines[len(klines)-1].CloseTime
+	if endTime <= startTime {
+		return nil, fmt.Errorf("invalid VPVR trade window")
+	}
+
+	return client.GetAggregatedTrades(symbol, startTime, endTime, maxVPVRTrades)
+}
+
+func vpvrPriceRange(klines []Kline, numBins int) (float64, float64) {
+	priceMin := math.MaxFloat64
+	priceMax := -math.MaxFloat64
+
+	start := len(klines) - numBins
+	if start < 0 {
+		start = 0
+	}
+
+	for i := start; i < len(klines); i++ {
+		if klines[i].Low < priceMin {
+			priceMin = klines[i].Low
+		}
+		if klines[i].High > priceMax {
+			priceMax = klines[i].High
+		}
+	}
+
+	return priceMin, priceMax
+}
+
+func buildVPVRPriceLevels(priceMin, priceMax float64, numBins int) ([]float64, float64) {
+	if priceMin == math.MaxFloat64 || priceMax == -math.MaxFloat64 {
+		return nil, 0
+	}
+	if priceMax == priceMin {
+		// 扩展极小范围以避免分母为零
+		adjustment := math.Max(math.Abs(priceMin)*1e-4, 1e-6)
+		priceMax = priceMin + adjustment
+	}
+
+	binWidth := (priceMax - priceMin) / float64(numBins)
+	if binWidth == 0 {
+		return nil, 0
+	}
+
+	priceLevels := make([]float64, numBins)
+	for i := 0; i < numBins; i++ {
+		priceLevels[i] = priceMin + (float64(i)+0.5)*binWidth
+	}
+
+	return priceLevels, binWidth
+}
+
+func accumulateVolumesFromTrades(trades []Trade, priceMin, binWidth float64, numBins int) []float64 {
+	volumes := make([]float64, numBins)
+	if numBins == 0 || binWidth == 0 {
+		return volumes
+	}
+
+	upperBound := priceMin + float64(numBins)*binWidth
+
+	for _, trade := range trades {
+		price := trade.Price
+		if price < priceMin {
+			price = priceMin
+		}
+		if price >= upperBound {
+			price = math.Nextafter(upperBound, priceMin)
+		}
+
+		idx := binIndex(price, priceMin, binWidth, numBins)
+		volumes[idx] += trade.Quantity
+	}
+
+	return volumes
+}
+
+func accumulateVolumesFromKlines(klines []Kline, priceMin, binWidth float64, numBins int) []float64 {
+	volumes := make([]float64, numBins)
+	if numBins == 0 || binWidth == 0 {
+		return volumes
+	}
+
+	upperBound := priceMin + float64(numBins)*binWidth
+	start := len(klines) - numBins
+	if start < 0 {
+		start = 0
+	}
+
+	for i := start; i < len(klines); i++ {
+		typicalPrice := (klines[i].High + klines[i].Low + klines[i].Close) / 3
+		if typicalPrice < priceMin {
+			typicalPrice = priceMin
+		}
+		if typicalPrice >= upperBound {
+			typicalPrice = math.Nextafter(upperBound, priceMin)
+		}
+
+		idx := binIndex(typicalPrice, priceMin, binWidth, numBins)
+		volumes[idx] += klines[i].Volume
+	}
+
+	return volumes
+}
+
+func binIndex(price, priceMin, binWidth float64, numBins int) int {
+	idx := int(math.Floor((price - priceMin) / binWidth))
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= numBins {
+		idx = numBins - 1
+	}
+	return idx
+}
+
+func finalizeVPVR(priceLevels, volumes []float64, priceMin, binWidth float64) *VPVRData {
+	if len(priceLevels) == 0 || len(volumes) == 0 {
+		return &VPVRData{
+			PriceLevels: priceLevels,
+			Volumes:     volumes,
+		}
+	}
+
+	totalVolume := 0.0
+	for _, v := range volumes {
+		totalVolume += v
+	}
+
+	result := &VPVRData{
+		PriceLevels: priceLevels,
+		Volumes:     volumes,
+	}
+
+	if totalVolume == 0 {
+		return result
+	}
+
+	pocIndex := 0
+	maxVolume := volumes[0]
+	for i := 1; i < len(volumes); i++ {
+		if volumes[i] > maxVolume {
+			maxVolume = volumes[i]
+			pocIndex = i
+		}
+	}
+
+	included := make([]bool, len(volumes))
+	included[pocIndex] = true
+	cumulative := volumes[pocIndex]
+	left := pocIndex - 1
+	right := pocIndex + 1
+	targetVolume := totalVolume * 0.7
+
+	for cumulative < targetVolume && (left >= 0 || right < len(volumes)) {
+		leftVolume := -1.0
+		if left >= 0 {
+			leftVolume = volumes[left]
+		}
+
+		rightVolume := -1.0
+		if right < len(volumes) {
+			rightVolume = volumes[right]
+		}
+
+		switch {
+		case rightVolume > leftVolume:
+			if right < len(volumes) {
+				included[right] = true
+				cumulative += volumes[right]
+			}
+			right++
+		case left >= 0:
+			included[left] = true
+			cumulative += volumes[left]
+			left--
+		case right < len(volumes):
+			included[right] = true
+			cumulative += volumes[right]
+			right++
+		default:
+			left = -1
+			right = len(volumes)
+		}
+	}
+
+	valIndex := pocIndex
+	vahIndex := pocIndex
+	for i, ok := range included {
+		if !ok {
+			continue
+		}
+		if i < valIndex {
+			valIndex = i
+		}
+		if i > vahIndex {
+			vahIndex = i
+		}
+	}
+
+	result.POC = priceLevels[pocIndex]
+	result.VAL = priceMin + float64(valIndex)*binWidth
+	result.VAH = priceMin + float64(vahIndex+1)*binWidth
+
+	return result
 }

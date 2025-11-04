@@ -18,6 +18,16 @@ type APIClient struct {
 	client *http.Client
 }
 
+type aggTradeResponse struct {
+	AggregateTradeID int64  `json:"a"`
+	Price            string `json:"p"`
+	Quantity         string `json:"q"`
+	FirstTradeID     int64  `json:"f"`
+	LastTradeID      int64  `json:"l"`
+	Timestamp        int64  `json:"T"`
+	IsBuyerMaker     bool   `json:"m"`
+}
+
 func NewAPIClient() *APIClient {
 	return &APIClient{
 		client: &http.Client{
@@ -147,4 +157,110 @@ func (c *APIClient) GetCurrentPrice(symbol string) (float64, error) {
 	}
 
 	return price, nil
+}
+
+// GetAggregatedTrades 获取指定时间范围内的聚合成交数据
+func (c *APIClient) GetAggregatedTrades(symbol string, startTime, endTime int64, maxRecords int) ([]Trade, error) {
+	if startTime <= 0 || endTime <= 0 || startTime >= endTime {
+		return nil, fmt.Errorf("invalid time range for trades")
+	}
+
+	const batchLimit = 1000
+
+	var (
+		allTrades []Trade
+		current   = startTime
+	)
+
+	for current < endTime {
+		batch, err := c.fetchAggregatedTradesBatch(symbol, current, batchLimit)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(batch) == 0 {
+			break
+		}
+
+		for _, t := range batch {
+			if t.Timestamp > endTime {
+				break
+			}
+			allTrades = append(allTrades, t)
+			if maxRecords > 0 && len(allTrades) >= maxRecords {
+				return allTrades[:maxRecords], nil
+			}
+		}
+
+		lastTS := batch[len(batch)-1].Timestamp
+		nextStart := lastTS + 1
+		if nextStart <= current {
+			nextStart = current + 1
+		}
+		current = nextStart
+
+		if len(batch) < batchLimit {
+			break
+		}
+	}
+
+	return allTrades, nil
+}
+
+func (c *APIClient) fetchAggregatedTradesBatch(symbol string, startTime int64, limit int) ([]Trade, error) {
+	url := fmt.Sprintf("%s/fapi/v1/aggTrades", baseURL)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	q := req.URL.Query()
+	q.Add("symbol", symbol)
+	if startTime > 0 {
+		q.Add("startTime", strconv.FormatInt(startTime, 10))
+	}
+	if limit > 0 {
+		q.Add("limit", strconv.Itoa(limit))
+	}
+	req.URL.RawQuery = q.Encode()
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var rawTrades []aggTradeResponse
+	if err := json.Unmarshal(body, &rawTrades); err != nil {
+		return nil, err
+	}
+
+	trades := make([]Trade, 0, len(rawTrades))
+	for _, rt := range rawTrades {
+		price, err := strconv.ParseFloat(rt.Price, 64)
+		if err != nil {
+			log.Printf("解析交易价格失败: %v", err)
+			continue
+		}
+		quantity, err := strconv.ParseFloat(rt.Quantity, 64)
+		if err != nil {
+			log.Printf("解析交易数量失败: %v", err)
+			continue
+		}
+
+		trades = append(trades, Trade{
+			TradeID:      rt.AggregateTradeID,
+			Price:        price,
+			Quantity:     quantity,
+			Timestamp:    rt.Timestamp,
+			IsBuyerMaker: rt.IsBuyerMaker,
+		})
+	}
+
+	return trades, nil
 }

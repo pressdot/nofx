@@ -15,6 +15,7 @@ type Data struct {
 	FundingRate       float64
 	IntradaySeries    *IntradayData
 	LongerTermContext *LongerTermData
+	VPVR              *VPVRData
 }
 
 // OIData Open Interest数据
@@ -42,6 +43,25 @@ type LongerTermData struct {
 	AverageVolume float64
 	MACDValues    []float64
 	RSI14Values   []float64
+}
+
+// VPVRData Volume Profile Visible Range指标
+type VPVRData struct {
+	PriceLevels []float64
+	Volumes     []float64
+	POC         float64
+	VAH         float64
+	VAL         float64
+	Trades      []Trade
+}
+
+// Trade 单笔成交数据（用于构建VPVR分布）
+type Trade struct {
+	TradeID      int64
+	Price        float64
+	Quantity     float64
+	Timestamp    int64
+	IsBuyerMaker bool
 }
 
 // Binance API 响应结构
