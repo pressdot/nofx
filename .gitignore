@@ -31,6 +31,7 @@ Thumbs.db
 config.json
 config.db
 configbak.json
+.tool-versions
 
 # 决策日志
 decision_logs/
@@ -42,6 +43,7 @@ web/node_modules/
 node_modules/
 web/dist/
 web/.vite/
+<<<<<<< HEAD
 
 # ESLint 临时报告文件（调试时生成，不纳入版本控制）
 eslint-*.json
@@ -62,3 +64,6 @@ rsa_key*
 # 加密相关
 DATA_ENCRYPTION_KEY=*
 *.enc
+=======
+web/yarn.lock
+>>>>>>> b32f370 (Updates dependencies and ignores files)
