@@ -523,6 +523,26 @@ func calculateVPVR(klines []Kline, trades []Trade, numBins int) *VPVRData {
 		return nil
 	}
 
+	// 优先使用真实成交数据构建价格区间，避免异常极值导致分布被压扁
+	if len(trades) > 0 {
+		tradeMin, tradeMax := tradePriceRange(trades)
+		if tradeMax > tradeMin {
+			priceMin, priceMax := expandPriceRange(tradeMin, tradeMax)
+			priceLevels, binWidth := buildVPVRPriceLevels(priceMin, priceMax, numBins)
+			if binWidth > 0 {
+				volumes := accumulateVolumesFromTrades(trades, priceMin, binWidth, numBins)
+				if countNonZeroBins(volumes) > 1 {
+					result := finalizeVPVR(priceLevels, volumes, priceMin, binWidth)
+					if result != nil {
+						result.Trades = trades
+					}
+					return result
+				}
+			}
+		}
+	}
+
+	// 如果成交数据不足或分布异常，回退到K线成交量估算
 	priceMin, priceMax := vpvrPriceRange(klines, numBins)
 	if priceMin == math.MaxFloat64 || priceMax <= priceMin {
 		return nil
@@ -533,19 +553,8 @@ func calculateVPVR(klines []Kline, trades []Trade, numBins int) *VPVRData {
 		return nil
 	}
 
-	var volumes []float64
-	if len(trades) > 0 {
-		volumes = accumulateVolumesFromTrades(trades, priceMin, binWidth, numBins)
-	} else {
-		volumes = accumulateVolumesFromKlines(klines, priceMin, binWidth, numBins)
-	}
-
-	result := finalizeVPVR(priceLevels, volumes, priceMin, binWidth)
-	if result != nil && len(trades) > 0 {
-		result.Trades = trades
-	}
-
-	return result
+	volumes := accumulateVolumesFromKlines(klines, priceMin, binWidth, numBins)
+	return finalizeVPVR(priceLevels, volumes, priceMin, binWidth)
 }
 
 func fetchTradesForVPVR(client *APIClient, symbol string, klines []Kline, numBins int) ([]Trade, error) {
@@ -664,6 +673,42 @@ func accumulateVolumesFromKlines(klines []Kline, priceMin, binWidth float64, num
 	}
 
 	return volumes
+}
+
+func tradePriceRange(trades []Trade) (float64, float64) {
+	priceMin := math.MaxFloat64
+	priceMax := -math.MaxFloat64
+
+	for _, trade := range trades {
+		if trade.Price < priceMin {
+			priceMin = trade.Price
+		}
+		if trade.Price > priceMax {
+			priceMax = trade.Price
+		}
+	}
+
+	return priceMin, priceMax
+}
+
+func expandPriceRange(priceMin, priceMax float64) (float64, float64) {
+	if priceMax <= priceMin {
+		return priceMin, priceMax
+	}
+
+	span := priceMax - priceMin
+	padding := math.Max(span*0.005, 1e-6)
+	return priceMin - padding, priceMax + padding
+}
+
+func countNonZeroBins(volumes []float64) int {
+	count := 0
+	for _, v := range volumes {
+		if v > 0 {
+			count++
+		}
+	}
+	return count
 }
 
 func binIndex(price, priceMin, binWidth float64, numBins int) int {

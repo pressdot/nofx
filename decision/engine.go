@@ -131,6 +131,9 @@ func GetFullDecisionWithCustomPrompt(ctx *Context, mcpClient *mcp.Client, custom
 	systemPrompt := buildSystemPromptWithCustom(ctx.Account.TotalEquity, ctx.BTCETHLeverage, ctx.AltcoinLeverage, customPrompt, overrideBase, templateName)
 	userPrompt := buildUserPrompt(ctx)
 
+	log.Printf("[AI Request] System Prompt:\n%s", systemPrompt)
+	log.Printf("[AI Request] User Prompt:\n%s", userPrompt)
+
 	// 3. 调用AI API（使用 system + user prompt）
 	aiResponse, err := mcpClient.CallWithMessages(systemPrompt, userPrompt)
 	if err != nil {
