@@ -22,6 +22,9 @@ export default function HeroSection({ language }: HeroSectionProps) {
     duration: 2000,
   })
 
+  // 格式化 stars 显示
+  const formattedStars = (animatedStars / 1000).toFixed(1)
+
   const fadeInUp = {
     initial: { opacity: 0, y: 60 },
     animate: { opacity: 1, y: 0 },
