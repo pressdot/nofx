@@ -12,7 +12,10 @@ import (
 	"strings"
 )
 
-const maxVPVRTrades = 5000
+const (
+	maxVPVRTrades   = 5000
+	defaultVPVRBins = 24
+)
 
 // Get 获取指定代币的市场数据
 func Get(symbol string) (*Data, error) {
@@ -75,14 +78,22 @@ func Get(symbol string) (*Data, error) {
 
 	// 计算VPVR数据（优先使用交易明细）
 	apiClient := NewAPIClient()
-	vpvrTrades, tradeErr := fetchTradesForVPVR(apiClient, symbol, klines4h, 24)
+	vpvrTrades4h, tradeErr := fetchTradesForVPVR(apiClient, symbol, klines4h, defaultVPVRBins)
 	if tradeErr != nil {
-		log.Printf("获取VPVR交易数据失败: %v", tradeErr)
+		log.Printf("获取4h VPVR交易数据失败: %v", tradeErr)
 	}
-	vpvrData := calculateVPVR(klines4h, vpvrTrades, 24)
-	if vpvrData == nil {
-		// 使用K线数据作为退路
-		vpvrData = calculateVPVR(klines4h, nil, 24)
+	vpvr4h := calculateVPVR(klines4h, vpvrTrades4h, defaultVPVRBins)
+	if vpvr4h == nil {
+		vpvr4h = calculateVPVR(klines4h, nil, defaultVPVRBins)
+	}
+
+	vpvrTrades3m, tradeErr := fetchTradesForVPVR(apiClient, symbol, klines3m, defaultVPVRBins)
+	if tradeErr != nil {
+		log.Printf("获取3m VPVR交易数据失败: %v", tradeErr)
+	}
+	vpvr3m := calculateVPVR(klines3m, vpvrTrades3m, defaultVPVRBins)
+	if vpvr3m == nil {
+		vpvr3m = calculateVPVR(klines3m, nil, defaultVPVRBins)
 	}
 
 	return &Data{
@@ -97,7 +108,8 @@ func Get(symbol string) (*Data, error) {
 		FundingRate:       fundingRate,
 		IntradaySeries:    intradayData,
 		LongerTermContext: longerTermData,
-		VPVR:              vpvrData,
+		VPVR3m:            vpvr3m,
+		VPVR4h:            vpvr4h,
 	}, nil
 }
 
@@ -439,14 +451,25 @@ func Format(data *Data) string {
 		}
 	}
 
-	if data.VPVR != nil && len(data.VPVR.PriceLevels) > 0 {
-		sb.WriteString("VPVR (3‑minute visible range):\n\n")
-		sb.WriteString(fmt.Sprintf("Point of Control: %.3f\n", data.VPVR.POC))
-		sb.WriteString(fmt.Sprintf("Value Area Low: %.3f, Value Area High: %.3f\n\n", data.VPVR.VAL, data.VPVR.VAH))
-		sb.WriteString(fmt.Sprintf("Price levels: %s\n\n", formatFloatSlice(data.VPVR.PriceLevels)))
-		sb.WriteString(fmt.Sprintf("Volume profile: %s\n\n", formatFloatSlice(data.VPVR.Volumes)))
-		if len(data.VPVR.Trades) > 0 {
-			sb.WriteString(fmt.Sprintf("Trades analyzed: %d\n\n", len(data.VPVR.Trades)))
+	if data.VPVR3m != nil && len(data.VPVR3m.PriceLevels) > 0 {
+		sb.WriteString("VPVR (3-minute visible range):\n\n")
+		sb.WriteString(fmt.Sprintf("Point of Control: %.3f\n", data.VPVR3m.POC))
+		sb.WriteString(fmt.Sprintf("Value Area Low: %.3f, Value Area High: %.3f\n\n", data.VPVR3m.VAL, data.VPVR3m.VAH))
+		sb.WriteString(fmt.Sprintf("Price levels: %s\n\n", formatFloatSlice(data.VPVR3m.PriceLevels)))
+		sb.WriteString(fmt.Sprintf("Volume profile: %s\n\n", formatFloatSlice(data.VPVR3m.Volumes)))
+		if len(data.VPVR3m.Trades) > 0 {
+			sb.WriteString(fmt.Sprintf("Trades analyzed: %d\n\n", len(data.VPVR3m.Trades)))
+		}
+	}
+
+	if data.VPVR4h != nil && len(data.VPVR4h.PriceLevels) > 0 {
+		sb.WriteString("VPVR (4-hour visible range):\n\n")
+		sb.WriteString(fmt.Sprintf("Point of Control: %.3f\n", data.VPVR4h.POC))
+		sb.WriteString(fmt.Sprintf("Value Area Low: %.3f, Value Area High: %.3f\n\n", data.VPVR4h.VAL, data.VPVR4h.VAH))
+		sb.WriteString(fmt.Sprintf("Price levels: %s\n\n", formatFloatSlice(data.VPVR4h.PriceLevels)))
+		sb.WriteString(fmt.Sprintf("Volume profile: %s\n\n", formatFloatSlice(data.VPVR4h.Volumes)))
+		if len(data.VPVR4h.Trades) > 0 {
+			sb.WriteString(fmt.Sprintf("Trades analyzed: %d\n\n", len(data.VPVR4h.Trades)))
 		}
 	}
 

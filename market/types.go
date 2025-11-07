@@ -15,7 +15,8 @@ type Data struct {
 	FundingRate       float64
 	IntradaySeries    *IntradayData
 	LongerTermContext *LongerTermData
-	VPVR              *VPVRData
+	VPVR3m            *VPVRData
+	VPVR4h            *VPVRData
 }
 
 // OIData Open Interest数据
