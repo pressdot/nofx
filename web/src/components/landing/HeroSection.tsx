@@ -72,14 +72,16 @@ export default function HeroSection({ language }: HeroSectionProps) {
                     <>
                       {daysOld} 天内{' '}
                       <span className="inline-block tabular-nums">
-                        {(animatedStars / 1000).toFixed(1)}
+                        {/* FIX: 使用 formattedStars 变量 */}
+                        {formattedStars}
                       </span>
                       K+ GitHub Stars
                     </>
                   ) : (
                     <>
                       <span className="inline-block tabular-nums">
-                        {(animatedStars / 1000).toFixed(1)}
+                        {/* FIX: 在这里也使用 formattedStars 变量 */}
+                        {formattedStars}
                       </span>
                       K+ GitHub Stars in {daysOld} days
                     </>
