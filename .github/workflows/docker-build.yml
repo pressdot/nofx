@@ -118,6 +118,7 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.name }}-${{ matrix.arch_tag }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}-${{ matrix.arch_tag }}
           build-args: |
+            GO_VERSION=1.25-alpine
             BUILD_DATE=${{ github.event.head_commit.timestamp }}
             VCS_REF=${{ github.sha }}
             VERSION=${{ github.ref_name }}
