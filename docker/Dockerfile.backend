@@ -1,12 +1,10 @@
-# docker/backend/Dockerfile
-
 # ═══════════════════════════════════════════════════════════════
 # NOFX Backend Dockerfile (Go + TA-Lib)
 # Multi-stage build with shared TA-Lib compilation stage
 # Versions extracted as ARGs for maintainability
 # ═══════════════════════════════════════════════════════════════
 
-ARG GO_VERSION=1.25-alpine
+ARG GO_VERSION=1.22-alpine  # 建议使用 Go 的较新稳定版，例如 1.22
 ARG ALPINE_VERSION=latest
 ARG TA_LIB_VERSION=0.4.0
 
@@ -16,12 +14,20 @@ ARG TA_LIB_VERSION=0.4.0
 FROM alpine:${ALPINE_VERSION} AS ta-lib-builder
 ARG TA_LIB_VERSION
 
+# --- 变化 1: 从依赖中移除 wget ---
 RUN apk update && apk add --no-cache \
-    wget tar make gcc g++ musl-dev autoconf automake
+    tar make gcc g++ musl-dev autoconf automake
 
-RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-${TA_LIB_VERSION}-src.tar.gz && \
+# --- 变化 2: 使用 COPY 代替 wget ---
+# 将预先下载好的源码包从项目目录复制到镜像中
+# 注意：源路径是相对于 docker build 的上下文（context）
+COPY docker/vendor/ta-lib-${TA_LIB_VERSION}-src.tar.gz /tmp/
+
+# --- 变化 3: 修改编译脚本以使用已复制的文件 ---
+RUN cd /tmp && \
     tar -xzf ta-lib-${TA_LIB_VERSION}-src.tar.gz && \
     cd ta-lib && \
+    # 保留对 aarch64 架构的兼容性处理
     if [ "$(uname -m)" = "aarch64" ]; then \
         CONFIG_GUESS=$(find /usr/share -name config.guess | head -1) && \
         CONFIG_SUB=$(find /usr/share -name config.sub | head -1) && \
@@ -31,7 +37,8 @@ RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-${TA_LIB_VERSION}-src.
     fi && \
     ./configure --prefix=/usr/local && \
     make && make install && \
-    cd .. && rm -rf ta-lib ta-lib-${TA_LIB_VERSION}-src.tar.gz
+    # 清理临时文件
+    rm -rf /tmp/*
 
 # ──────────────────────────────────────────────────────────────
 # Backend Build Stage (Go Application)
@@ -40,6 +47,7 @@ FROM golang:${GO_VERSION} AS backend-builder
 
 RUN apk update && apk add --no-cache git make gcc g++ musl-dev
 
+# 从 ta-lib-builder 阶段复制编译好的库文件
 COPY --from=ta-lib-builder /usr/local /usr/local
 
 WORKDIR /app
@@ -56,10 +64,13 @@ RUN CGO_ENABLED=1 GOOS=linux \
 # ──────────────────────────────────────────────────────────────
 FROM alpine:${ALPINE_VERSION}
 
-RUN apk update && apk add --no-cache ca-certificates tzdata
+# 安装运行时依赖
+RUN apk update && apk add --no-cache ca-certificates tzdata wget # wget 用于健康检查
 
+# 从 ta-lib-builder 阶段复制运行时库
 COPY --from=ta-lib-builder /usr/local /usr/local
 WORKDIR /app
+# 从 backend-builder 阶段复制编译好的 Go 程序
 COPY --from=backend-builder /app/nofx .
 
 EXPOSE 8080
