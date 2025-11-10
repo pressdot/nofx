@@ -3,7 +3,6 @@ package market
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"io"
 	"math"
